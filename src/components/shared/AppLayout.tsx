@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router";
 import {
-  Search,
   MessageSquare,
   ScanLine,
   Building2,
@@ -17,7 +16,6 @@ import { useAuth } from "@/hooks/useAuth";
 
 const navItems = [
   { path: "/", label: "Asosiy", icon: BarChart3 },
-  { path: "/market", label: "Bozor", icon: Search },
   { path: "/reviews", label: "Sharhlar", icon: MessageSquare },
   { path: "/ads", label: "Reklama", icon: ScanLine },
   { path: "/business", label: "Biznesim", icon: Building2 },
@@ -42,10 +40,10 @@ export default function AppLayout({ children }: AppLayoutProps) {
         <Link to="/" className="flex items-center gap-2">
           <img
             src="/sayyoh_ai_3d_dark_mode_transparent.png"
-            alt="Sayyoh AI"
+            alt="Asl AI"
             className="w-8 h-8 object-contain"
           />
-          <span className="text-lg font-semibold tracking-tight">Sayyoh AI</span>
+          <span className="text-lg font-semibold tracking-tight">Asl AI</span>
         </Link>
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -73,12 +71,12 @@ export default function AppLayout({ children }: AppLayoutProps) {
           <Link to="/" className="flex items-center gap-3">
             <img
               src="/sayyoh_ai_3d_dark_mode_transparent.png"
-              alt="Sayyoh AI"
+              alt="Asl AI"
               className="w-10 h-10 object-contain drop-shadow-[0_0_12px_rgba(14,165,164,0.3)]"
             />
             <div>
               <h1 className="text-lg font-semibold tracking-tight leading-none">
-                Sayyoh AI
+                Asl AI
               </h1>
               <p className="text-[10px] text-[#8A8F98] mt-0.5">Ishonch raqamlarda</p>
             </div>

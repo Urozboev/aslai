@@ -62,11 +62,11 @@ export default function Login() {
           <div className="w-20 h-20 mx-auto mb-6 flex items-center justify-center">
             <img
               src="/sayyoh_ai_3d_dark_mode_transparent.png"
-              alt="Sayyoh AI"
+              alt="Asl AI"
               className="w-20 h-20 object-contain drop-shadow-[0_0_20px_rgba(14,165,164,0.35)]"
             />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight text-glow-teal">Sayyoh AI</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-glow-teal">Asl AI</h1>
           <p className="text-[#8A8F98] mt-2">Ishonch raqamlarda</p>
         </div>
 
@@ -157,7 +157,7 @@ export default function Login() {
         </div>
 
         <p className="text-center text-[11px] text-[#8A8F98]/50 mt-6">
-          Sayyoh AI — O'zbekiston bozorlariga ishonch va shaffoflik olib kelish
+          Asl AI — O'zbekiston bozorlariga ishonch va shaffoflik olib kelish
         </p>
       </div>
     </div>

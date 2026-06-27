@@ -53,7 +53,7 @@ export default function Admin() {
   const { data: heatmap } = trpc.analytics.fakeReviewHeatmap.useQuery();
   const { data: shadowSignals } = trpc.analytics.shadowEconomySignals.useQuery();
 
-  const regions = [...new Set(businesses?.map((b) => b.region).filter(Boolean) || [])];
+  const regions = [...new Set(businesses?.map((b) => b.region).filter(Boolean) || [])] as string[];
 
   // Chart data
   const trustScoreData = businesses?.slice(0, 8).map((b) => ({
@@ -98,7 +98,7 @@ export default function Admin() {
 
   const handleExportReport = () => {
     const report = {
-      platform: "Sayyoh AI",
+      platform: "Asl AI",
       generatedAt: new Date().toISOString(),
       summary: overview,
       adStats,

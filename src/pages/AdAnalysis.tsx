@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { trpc } from "@/providers/trpc";
+import { isGeminiConfigured } from "@/lib/gemini";
 import AdHonestyMeter from "@/components/shared/AdHonestyMeter";
 import KineticText from "@/components/effects/KineticText";
 import {
@@ -14,10 +15,23 @@ import {
   FileSearch,
   ChevronDown,
   ChevronUp,
+  MapPin,
+  Star,
 } from "lucide-react";
 import { toast } from "sonner";
 
-type AdSourceType = "instagram_video" | "telegram_post" | "telegram_channel" | "image";
+type AdSourceType = "instagram_video" | "telegram_post" | "telegram_channel" | "image" | "map_location";
+
+type PlaceResult = {
+  found: boolean;
+  name: string;
+  rating: number;
+  reviewCount: number;
+  summary: string;
+  pros: string[];
+  cons: string[];
+  bestFor: string[];
+};
 
 export default function AdAnalysis() {
   const [selectedType, setSelectedType] = useState<AdSourceType | null>(null);
@@ -31,6 +45,10 @@ export default function AdAnalysis() {
     summary: string;
   } | null>(null);
   const [expandedFlags, setExpandedFlags] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [placeResult, setPlaceResult] = useState<PlaceResult | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const mediaRef = useRef<{ base64: string; mimeType: string } | null>(null);
 
   const { data: recentAnalyses } = trpc.adAnalysis.list.useQuery({ limit: 5 });
 
@@ -39,16 +57,73 @@ export default function AdAnalysis() {
       setAnalysisResult(data);
       toast.success("Reklama tahlil qilindi!");
     },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Tahlil qilib bo'lmadi");
+    },
   });
+
+  const placeSummary = trpc.place.summary.useMutation({
+    onSuccess: (data: PlaceResult) => {
+      setPlaceResult(data);
+      if (data.found) toast.success("Joy tahlil qilindi!");
+      else toast.error(data.summary || "Joy topilmadi");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Joyni tahlil qilib bo'lmadi");
+    },
+  });
+
+  const analyzing = createAnalysis.isPending || placeSummary.isPending;
+
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        resolve(result.split(",")[1] ?? ""); // "data:...;base64," qismini olib tashlash
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const handleFile = async (file: File | undefined) => {
+    if (!file) return;
+    // Inline so'rov hajmi cheklovi (~20MB)
+    if (file.size > 18 * 1024 * 1024) {
+      toast.error("Fayl juda katta (max ~18MB). Kichikroq rasm/video tanlang.");
+      return;
+    }
+    const base64 = await fileToBase64(file);
+    mediaRef.current = { base64, mimeType: file.type };
+    setFileName(file.name);
+    setAnalysisResult(null);
+  };
 
   const handleAnalyze = () => {
     if (!selectedType) {
       toast.error("Manba turini tanlang");
       return;
     }
+    // Google/Yandex Maps havolasi — joy va sharhlar bo'yicha xulosa
+    if (selectedType === "map_location") {
+      if (!sourceLink.trim()) {
+        toast.error("Manzil havolasini kiriting (Google yoki Yandex Maps)");
+        return;
+      }
+      setPlaceResult(null);
+      placeSummary.mutate({ url: sourceLink.trim() });
+      return;
+    }
+    const isMediaType = selectedType === "instagram_video" || selectedType === "image";
+    if (isMediaType && !mediaRef.current) {
+      toast.error("Avval rasm yoki video faylni yuklang");
+      return;
+    }
     createAnalysis.mutate({
       sourceType: selectedType,
       sourceLink: sourceLink || undefined,
+      mediaBase64: mediaRef.current?.base64,
+      mediaMimeType: mediaRef.current?.mimeType,
     });
   };
 
@@ -76,6 +151,12 @@ export default function AdAnalysis() {
       label: "Reklama rasmi",
       description: "Poster yoki rasm yuklang",
       icon: Image,
+    },
+    {
+      type: "map_location",
+      label: "Google/Yandex Map",
+      description: "Manzil havolasidan sharhlar xulosasi",
+      icon: MapPin,
     },
   ];
 
@@ -107,7 +188,7 @@ export default function AdAnalysis() {
       {/* Header */}
       <div>
         <KineticText
-          text="Reklama Tahlili"
+          text="Reklama tahlili"
           as="h1"
           className="text-3xl md:text-4xl font-bold mb-2"
         />
@@ -115,6 +196,17 @@ export default function AdAnalysis() {
           Reklamalarni AI yordamida tekshiring — yolg'on da'volarni aniqlang
         </p>
       </div>
+
+      {!isGeminiConfigured && (
+        <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+          <AlertTriangle size={18} className="text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-sm text-amber-200/90">
+            Gemini AI kaliti sozlanmagan — hozir <b>simulyatsiya</b> rejimida ishlaydi.
+            Haqiqiy rasm/video tahlili uchun <code>.env</code> fayliga{" "}
+            <code>VITE_GEMINI_API_KEY</code> qo'shing.
+          </p>
+        </div>
+      )}
 
       {/* Source Type Selection */}
       <div className="glass-card">
@@ -131,6 +223,9 @@ export default function AdAnalysis() {
                 onClick={() => {
                   setSelectedType(opt.type);
                   setAnalysisResult(null);
+                  setPlaceResult(null);
+                  setFileName(null);
+                  mediaRef.current = null;
                 }}
                 className={`p-4 rounded-xl border text-left transition-all ${
                   isSelected
@@ -153,15 +248,27 @@ export default function AdAnalysis() {
         {selectedType && (
           <div className="mt-6 space-y-4">
             {selectedType === "instagram_video" || selectedType === "image" ? (
-              <div className="border-2 border-dashed border-white/10 rounded-xl p-8 text-center hover:border-[#0EA5A4]/30 transition-colors cursor-pointer">
+              <div
+                onClick={() => fileRef.current?.click()}
+                className="border-2 border-dashed border-white/10 rounded-xl p-8 text-center hover:border-[#0EA5A4]/30 transition-colors cursor-pointer"
+              >
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept={selectedType === "image" ? "image/*" : "video/*"}
+                  className="hidden"
+                  onChange={(e) => handleFile(e.target.files?.[0])}
+                />
                 <Upload size={32} className="mx-auto text-[#8A8F98] mb-3" />
                 <p className="text-sm text-white font-medium">
-                  {selectedType === "instagram_video"
+                  {fileName
+                    ? fileName
+                    : selectedType === "instagram_video"
                     ? "Instagram videosini yuklang"
                     : "Reklama rasmini yuklang"}
                 </p>
                 <p className="text-xs text-[#8A8F98] mt-1">
-                  MP4, MOV yoki JPG, PNG (max 50MB)
+                  {fileName ? "Boshqa fayl tanlash uchun bosing" : "MP4, MOV yoki JPG, PNG (max ~18MB)"}
                 </p>
               </div>
             ) : (
@@ -174,7 +281,11 @@ export default function AdAnalysis() {
                   type="text"
                   value={sourceLink}
                   onChange={(e) => setSourceLink(e.target.value)}
-                  placeholder="https://t.me/..."
+                  placeholder={
+                    selectedType === "map_location"
+                      ? "https://maps.app.goo.gl/... yoki https://yandex.uz/maps/..."
+                      : "https://t.me/..."
+                  }
                   className="w-full bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 py-4 text-white placeholder:text-[#8A8F98]/50 focus:outline-none focus:border-[#0EA5A4]/50 focus:ring-1 focus:ring-[#0EA5A4]/30 transition-all"
                 />
               </div>
@@ -182,15 +293,103 @@ export default function AdAnalysis() {
 
             <button
               onClick={handleAnalyze}
-              disabled={createAnalysis.isPending}
+              disabled={analyzing}
               className="w-full flex items-center justify-center gap-2 py-4 rounded-xl bg-[#0EA5A4] text-white font-medium hover:bg-[#0D9488] transition-colors disabled:opacity-50"
             >
               <ScanLine size={18} />
-              {createAnalysis.isPending ? "Tahlil qilinmoqda..." : "Tekshirish"}
+              {analyzing
+                ? "Tahlil qilinmoqda..."
+                : selectedType === "map_location"
+                ? "Joyni tahlil qilish"
+                : "Tekshirish"}
             </button>
           </div>
         )}
       </div>
+
+      {/* Place (Map) Result */}
+      {placeResult && (
+        <div className="glass-card gradient-border">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-12 h-12 rounded-xl bg-[#0EA5A4]/15 flex items-center justify-center">
+              <MapPin size={24} className="text-[#0EA5A4]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-lg font-semibold truncate">
+                {placeResult.name || "Joy tahlili"}
+              </h3>
+              {placeResult.found && (
+                <div className="flex items-center gap-3 text-xs text-[#8A8F98] mt-0.5">
+                  {placeResult.rating > 0 && (
+                    <span className="flex items-center gap-1 text-amber-400">
+                      <Star size={12} className="fill-amber-400" />
+                      {placeResult.rating.toFixed(1)}
+                    </span>
+                  )}
+                  {placeResult.reviewCount > 0 && <span>{placeResult.reviewCount}+ sharh</span>}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {placeResult.summary && (
+            <div className="p-4 rounded-xl bg-white/5 border border-white/10 mb-4">
+              <p className="text-sm text-white/90 leading-relaxed">{placeResult.summary}</p>
+            </div>
+          )}
+
+          {placeResult.found && (
+            <>
+              <div className="grid md:grid-cols-2 gap-4">
+                {placeResult.pros.length > 0 && (
+                  <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/15">
+                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">
+                      Afzalliklari
+                    </p>
+                    <ul className="space-y-1.5">
+                      {placeResult.pros.map((p, i) => (
+                        <li key={i} className="text-sm text-white/80 flex gap-2">
+                          <span className="text-emerald-400">+</span>
+                          {p}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {placeResult.cons.length > 0 && (
+                  <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/15">
+                    <p className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-2">
+                      Kamchiliklari
+                    </p>
+                    <ul className="space-y-1.5">
+                      {placeResult.cons.map((c, i) => (
+                        <li key={i} className="text-sm text-white/80 flex gap-2">
+                          <span className="text-red-400">−</span>
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              {placeResult.bestFor.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 mt-4">
+                  <span className="text-xs text-[#8A8F98]">Kimlar uchun mos:</span>
+                  {placeResult.bestFor.map((b, i) => (
+                    <span
+                      key={i}
+                      className="text-xs px-3 py-1 rounded-full bg-[#0EA5A4]/10 text-[#0EA5A4] border border-[#0EA5A4]/20"
+                    >
+                      {b}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* Analysis Result */}
       {analysisResult && (

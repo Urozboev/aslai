@@ -1,7 +1,7 @@
 import { trpc } from "@/providers/trpc";
 import TrustScoreGauge from "@/components/shared/TrustScoreGauge";
 import MobileLayout from "@/mobile/components/MobileLayout";
-import { TrendingUp, Store, MessageSquare, AlertTriangle, Activity, ChevronRight } from "lucide-react";
+import { Store, MessageSquare, AlertTriangle, Activity, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router";
 
 export default function MobileHome() {
@@ -41,14 +41,14 @@ export default function MobileHome() {
         {/* Quick Actions */}
         <div className="grid grid-cols-2 gap-3">
           <button
-            onClick={() => navigate("/mobile/market")}
+            onClick={() => navigate("/mobile/reviews")}
             className="glass-card p-4 flex flex-col items-start gap-2 active:scale-95 transition-transform"
           >
             <div className="w-10 h-10 rounded-xl bg-[#0EA5A4]/15 flex items-center justify-center">
-              <TrendingUp size={20} className="text-[#0EA5A4]" />
+              <MessageSquare size={20} className="text-[#0EA5A4]" />
             </div>
-            <span className="text-sm font-medium">Bozor</span>
-            <span className="text-[10px] text-[#8A8F98]">Narxlar va tendensiyalar</span>
+            <span className="text-sm font-medium">Sharhlar</span>
+            <span className="text-[10px] text-[#8A8F98]">AI tahlili va baholar</span>
           </button>
           <button
             onClick={() => navigate("/mobile/ads")}

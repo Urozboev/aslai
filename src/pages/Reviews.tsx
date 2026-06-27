@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   XCircle,
+  Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,6 +34,11 @@ export default function Reviews() {
   );
 
   const { data: reviewStats } = trpc.review.getStats.useQuery(
+    { businessId: selectedBusiness || 0 },
+    { enabled: selectedBusiness !== null }
+  );
+
+  const { data: aiSummary, isFetching: summaryLoading } = trpc.review.summary.useQuery(
     { businessId: selectedBusiness || 0 },
     { enabled: selectedBusiness !== null }
   );
@@ -63,7 +69,6 @@ export default function Reviews() {
 
   const filterOptions = [
     { value: "all", label: "Barchasi" },
-    { value: "market", label: "Bozor" },
     { value: "tourism", label: "Turizm" },
     { value: "service", label: "Xizmat" },
   ];
@@ -98,7 +103,7 @@ export default function Reviews() {
     <div className="space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-3xl font-bold mb-2">Ishonchli Sharhlar</h1>
+        <h1 className="text-3xl font-bold mb-2">Ishonchli sharhlar</h1>
         <p className="text-[#8A8F98]">
           AI yordamida tekshirilgan, haqiqiy sharhlar va baholar
         </p>
@@ -220,6 +225,82 @@ export default function Reviews() {
                   </div>
                 </div>
               )}
+
+              {/* AI Summary (1000 sharhni 10 soniyada jamlash) */}
+              <div className="glass-card gradient-border">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="w-8 h-8 rounded-lg bg-[#0EA5A4]/15 flex items-center justify-center">
+                    <Sparkles size={16} className="text-[#0EA5A4]" />
+                  </div>
+                  <h3 className="text-base font-semibold">AI Xulosa</h3>
+                  {summaryLoading && (
+                    <span className="text-xs text-[#8A8F98] animate-pulse">tahlil qilinmoqda…</span>
+                  )}
+                </div>
+
+                {aiSummary && (
+                  <div className="space-y-4">
+                    {aiSummary.summary && (
+                      <p className="text-sm text-white/90 leading-relaxed">{aiSummary.summary}</p>
+                    )}
+
+                    <div className="grid md:grid-cols-2 gap-4">
+                      {aiSummary.pros.length > 0 && (
+                        <div className="p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/15">
+                          <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">
+                            Afzalliklari
+                          </p>
+                          <ul className="space-y-1.5">
+                            {aiSummary.pros.map((p: string, i: number) => (
+                              <li key={i} className="text-sm text-white/80 flex gap-2">
+                                <span className="text-emerald-400">+</span>
+                                {p}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {aiSummary.cons.length > 0 && (
+                        <div className="p-4 rounded-xl bg-red-500/5 border border-red-500/15">
+                          <p className="text-xs font-semibold text-red-400 uppercase tracking-wider mb-2">
+                            Kamchiliklari
+                          </p>
+                          <ul className="space-y-1.5">
+                            {aiSummary.cons.map((c: string, i: number) => (
+                              <li key={i} className="text-sm text-white/80 flex gap-2">
+                                <span className="text-red-400">−</span>
+                                {c}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {aiSummary.bestFor.length > 0 && (
+                        <>
+                          <span className="text-xs text-[#8A8F98]">Kimlar uchun mos:</span>
+                          {aiSummary.bestFor.map((b: string, i: number) => (
+                            <span
+                              key={i}
+                              className="text-xs px-3 py-1 rounded-full bg-[#0EA5A4]/10 text-[#0EA5A4] border border-[#0EA5A4]/20"
+                            >
+                              {b}
+                            </span>
+                          ))}
+                        </>
+                      )}
+                    </div>
+
+                    {aiSummary.priceQuality && (
+                      <p className="text-xs text-[#8A8F98]">
+                        <b className="text-white/70">Narx–sifat:</b> {aiSummary.priceQuality}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* Add Review Button */}
               <button

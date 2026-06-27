@@ -73,6 +73,7 @@ create table public.businesses (
   "trustScore"    integer default 0,
   "adRating"      numeric(3,1),
   "realRating"    numeric(3,1),
+  photos          jsonb not null default '[]'::jsonb,
   "createdAt"     timestamptz not null default now()
 );
 

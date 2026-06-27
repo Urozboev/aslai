@@ -22,8 +22,26 @@ import {
   Edit3,
   Save,
   X,
+  Camera,
+  CheckCircle2,
+  History,
+  MapPin,
+  Receipt,
+  ArrowUp,
+  ArrowDown,
+  Minus,
 } from "lucide-react";
 import { toast } from "sonner";
+import CameraCapture from "@/components/shared/CameraCapture";
+import { PLACE_KINDS, getPlaceKind, type PhotoRequirement } from "@/lib/photoRequirements";
+
+// "Holatni yangilash" uchun umumiy talab (obyekt-match yumshoq, asosiysi holat bali)
+const GENERIC_CONDITION_REQ: PhotoRequirement = {
+  id: "umumiy",
+  label: "Umumiy holat",
+  mustContain: ["joyning ko'rinishi"],
+  hint: "Joyning hozirgi holatini suratga oling",
+};
 import {
   XAxis,
   YAxis,
@@ -44,6 +62,14 @@ export default function Business() {
   const [bizType, setBizType] = useState<"market" | "tourism" | "service">("market");
   const [bizRegion, setBizRegion] = useState("");
   const [bizCategory, setBizCategory] = useState("");
+  const [placeKindId, setPlaceKindId] = useState<string | null>(null);
+  const [bizPhotos, setBizPhotos] = useState<
+    Record<string, { label: string; url: string; conditionScore: number; conditionNote: string }>
+  >({});
+  const [cameraReq, setCameraReq] = useState<PhotoRequirement | null>(null);
+  // Mavjud biznes uchun "Holatni yangilash" kamerasi
+  const [historyCamera, setHistoryCamera] = useState<boolean>(false);
+  const [mapUrl, setMapUrl] = useState("");
   const [showEnrichment, setShowEnrichment] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [editDescription, setEditDescription] = useState("");
@@ -80,6 +106,13 @@ export default function Business() {
       utils.business.list.invalidate();
       setShowAddBusiness(false);
       setBizName("");
+      setPlaceKindId(null);
+      setBizPhotos({});
+      setBizCategory("");
+      setBizRegion("");
+    },
+    onError: (err: unknown) => {
+      toast.error(err instanceof Error ? err.message : "Biznesni saqlab bo'lmadi");
     },
   });
 
@@ -98,6 +131,51 @@ export default function Business() {
     },
   });
 
+  // ─── Haqiqat tarixi + narxlar ───
+  const { data: placeHistory } = trpc.place.history.useQuery(
+    { businessId: selectedBusiness || 0 },
+    { enabled: selectedBusiness !== null }
+  );
+  const placeAddPhoto = trpc.place.addPhoto.useMutation({
+    onSuccess: () => { toast.success("Holat tarixga qo'shildi!"); utils.place.history.invalidate(); },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : "Saqlab bo'lmadi"),
+  });
+  const enrichMap = trpc.place.enrichFromMap.useMutation({
+    onSuccess: (d: { found: boolean; note: string }) => {
+      if (d.found) toast.success("Xaritadan tarixga qo'shildi!");
+      else toast.error(d.note || "Joy topilmadi");
+      utils.place.history.invalidate();
+      setMapUrl("");
+    },
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : "Xato"),
+  });
+  const [nearby, setNearby] = useState<Record<string, unknown> | null>(null);
+  const nearbyPrices = trpc.place.nearbyPrices.useMutation({
+    onSuccess: (d: Record<string, unknown>) => setNearby(d),
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : "Xato"),
+  });
+  const [receipt, setReceipt] = useState<Record<string, unknown> | null>(null);
+  const receiptCheck = trpc.price.checkReceipt.useMutation({
+    onSuccess: (d: Record<string, unknown>) => setReceipt(d),
+    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : "Xato"),
+  });
+
+  const handleReceiptFile = (file: File | undefined) => {
+    if (!file || !selectedBusinessData) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(",")[1] ?? "";
+      receiptCheck.mutate({
+        base64,
+        mimeType: file.type,
+        businessName: selectedBusinessData.name,
+        region: selectedBusinessData.region,
+        category: selectedBusinessData.category,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleCopyReply = () => {
     if (replyDraft?.finalText) {
       navigator.clipboard.writeText(replyDraft.finalText);
@@ -107,13 +185,39 @@ export default function Business() {
     }
   };
 
+  const selectedKind = getPlaceKind(placeKindId);
+  const requiredReqs = selectedKind?.requirements ?? [];
+  const allPhotosReady =
+    !!selectedKind && requiredReqs.every((r) => bizPhotos[r.id]);
+
+  const handleSelectKind = (kindId: string) => {
+    const kind = getPlaceKind(kindId);
+    if (!kind) return;
+    setPlaceKindId(kindId);
+    setBizType(kind.type);
+    if (!bizCategory) setBizCategory(kind.label);
+    setBizPhotos({});
+  };
+
   const handleAddBusiness = () => {
-    if (!bizName.trim()) return;
+    if (!bizName.trim()) {
+      toast.error("Biznes nomini kiriting");
+      return;
+    }
+    if (!selectedKind) {
+      toast.error("Obyekt turini tanlang");
+      return;
+    }
+    if (!allPhotosReady) {
+      toast.error("Barcha talab qilingan rasmlarni kamera orqali tasdiqlang");
+      return;
+    }
     createBusiness.mutate({
       name: bizName,
       type: bizType,
       region: bizRegion || undefined,
       category: bizCategory || undefined,
+      photos: requiredReqs.map((r) => bizPhotos[r.id]),
     });
   };
 
@@ -210,15 +314,18 @@ export default function Business() {
             <input type="text" value={bizName} onChange={(e) => setBizName(e.target.value)}
               placeholder="Biznes nomi"
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-[#8A8F98]/50 focus:outline-none focus:border-[#0EA5A4]/50" />
-            <div className="grid grid-cols-3 gap-3">
-              {(["market", "tourism", "service"] as const).map((type) => (
-                <button key={type} onClick={() => setBizType(type)}
-                  className={`px-4 py-3 rounded-xl text-sm font-medium border transition-all ${
-                    bizType === type ? "border-[#0EA5A4]/50 bg-[#0EA5A4]/10 text-[#0EA5A4]" : "border-white/10 bg-white/5 text-[#8A8F98] hover:bg-white/10"
-                  }`}>
-                  {type === "market" ? "Bozor" : type === "tourism" ? "Turizm" : "Xizmat"}
-                </button>
-              ))}
+            <div>
+              <p className="text-xs text-[#8A8F98] mb-2 uppercase tracking-wider">Obyekt turi</p>
+              <div className="grid grid-cols-2 gap-3">
+                {PLACE_KINDS.map((kind) => (
+                  <button key={kind.id} onClick={() => handleSelectKind(kind.id)}
+                    className={`px-4 py-3 rounded-xl text-sm font-medium border text-left transition-all ${
+                      placeKindId === kind.id ? "border-[#0EA5A4]/50 bg-[#0EA5A4]/10 text-[#0EA5A4]" : "border-white/10 bg-white/5 text-[#8A8F98] hover:bg-white/10"
+                    }`}>
+                    {kind.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <input type="text" value={bizCategory} onChange={(e) => setBizCategory(e.target.value)}
               placeholder="Kategoriya (ixtiyoriy)"
@@ -226,12 +333,104 @@ export default function Business() {
             <input type="text" value={bizRegion} onChange={(e) => setBizRegion(e.target.value)}
               placeholder="Hudud (ixtiyoriy)"
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-[#8A8F98]/50 focus:outline-none focus:border-[#0EA5A4]/50" />
-            <button onClick={handleAddBusiness} disabled={createBusiness.isPending}
+
+            {/* Talab qilinadigan rasmlar (kamera + AI tekshiruv) */}
+            {selectedKind && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-[#8A8F98] uppercase tracking-wider">
+                    Talab qilinadigan rasmlar (real vaqt kamera)
+                  </p>
+                  <span className="text-[11px] text-[#8A8F98]">
+                    {Object.keys(bizPhotos).length}/{requiredReqs.length}
+                  </span>
+                </div>
+                {requiredReqs.map((req) => {
+                  const done = bizPhotos[req.id];
+                  return (
+                    <div key={req.id}
+                      className={`flex items-center gap-3 p-3 rounded-xl border ${
+                        done ? "border-emerald-500/30 bg-emerald-500/5" : "border-white/10 bg-white/5"
+                      }`}>
+                      {done ? (
+                        <img src={done.url} alt={req.label} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
+                          <Camera size={18} className="text-[#8A8F98]" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white flex items-center gap-1.5">
+                          {req.label}
+                          {done && <CheckCircle2 size={14} className="text-emerald-400" />}
+                        </p>
+                        <p className="text-[11px] text-[#8A8F98] truncate">
+                          Kerak: {req.mustContain.join(", ")}
+                        </p>
+                      </div>
+                      <button onClick={() => setCameraReq(req)}
+                        className={`px-3 py-2 rounded-lg text-xs font-medium shrink-0 transition-colors ${
+                          done ? "bg-white/5 text-[#8A8F98] hover:bg-white/10" : "bg-[#0EA5A4] text-white hover:bg-[#0D9488]"
+                        }`}>
+                        {done ? "Qayta" : "Kamera"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <button onClick={handleAddBusiness} disabled={createBusiness.isPending || !allPhotosReady}
               className="px-6 py-3 rounded-xl bg-[#0EA5A4] text-white font-medium hover:bg-[#0D9488] transition-colors disabled:opacity-50">
-              {createBusiness.isPending ? "Saqlanmoqda..." : "Saqlash"}
+              {createBusiness.isPending
+                ? "Saqlanmoqda..."
+                : !selectedKind
+                ? "Obyekt turini tanlang"
+                : !allPhotosReady
+                ? "Avval rasmlarni tasdiqlang"
+                : "Saqlash"}
             </button>
           </div>
         </div>
+      )}
+
+      {/* Kamera + AI tekshiruv modal (yangi biznes) */}
+      {cameraReq && (
+        <CameraCapture
+          requirement={cameraReq}
+          onClose={() => setCameraReq(null)}
+          onVerified={(data) => {
+            setBizPhotos((prev) => ({
+              ...prev,
+              [cameraReq.id]: {
+                label: cameraReq.label,
+                url: data.url,
+                conditionScore: data.conditionScore,
+                conditionNote: data.conditionNote,
+              },
+            }));
+            setCameraReq(null);
+            toast.success(`${cameraReq.label} tasdiqlandi!`);
+          }}
+        />
+      )}
+
+      {/* Holatni yangilash kamerasi (mavjud biznes) */}
+      {historyCamera && selectedBusiness && (
+        <CameraCapture
+          requirement={GENERIC_CONDITION_REQ}
+          onClose={() => setHistoryCamera(false)}
+          onVerified={(data) => {
+            placeAddPhoto.mutate({
+              businessId: selectedBusiness,
+              label: GENERIC_CONDITION_REQ.label,
+              url: data.url,
+              conditionScore: data.conditionScore,
+              note: data.conditionNote,
+            });
+            setHistoryCamera(false);
+          }}
+        />
       )}
 
       {/* Claim Business Search */}
@@ -307,6 +506,25 @@ export default function Business() {
               <p className="text-sm text-[#8A8F98] leading-relaxed">{selectedBusinessData.description || "Tavsif qo'shilmagan"}</p>
             )}
 
+            {/* Tasdiqlangan rasmlar */}
+            {Array.isArray(selectedBusinessData.photos) && selectedBusinessData.photos.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs text-[#8A8F98] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <CheckCircle2 size={12} className="text-emerald-400" /> AI tasdiqlagan rasmlar
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(selectedBusinessData.photos as { label: string; url: string }[]).map((ph, i) => (
+                    <a key={i} href={ph.url} target="_blank" rel="noreferrer" className="group relative">
+                      <img src={ph.url} alt={ph.label} className="w-20 h-20 rounded-lg object-cover border border-white/10" />
+                      <span className="absolute bottom-0 inset-x-0 text-[9px] text-white bg-black/60 rounded-b-lg px-1 py-0.5 truncate text-center">
+                        {ph.label}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="mt-4 flex items-center gap-6">
               <TrustScoreGauge score={selectedBusinessData.trustScore || 0} size={60} />
               {ratingDistribution && (
@@ -324,6 +542,175 @@ export default function Business() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ─── Haqiqat tarixi (joy holati vaqt bo'yicha) ─── */}
+          <div className="glass-card">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <History size={20} className="text-[#0EA5A4]" />
+                <h3 className="text-lg font-semibold">Haqiqat tarixi</h3>
+                {placeHistory?.trend && (
+                  <span
+                    className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full ${
+                      placeHistory.trend.direction === "improved"
+                        ? "bg-emerald-500/10 text-emerald-400"
+                        : placeHistory.trend.direction === "declined"
+                        ? "bg-red-500/10 text-red-400"
+                        : "bg-white/5 text-[#8A8F98]"
+                    }`}
+                  >
+                    {placeHistory.trend.direction === "improved" ? (
+                      <ArrowUp size={12} />
+                    ) : placeHistory.trend.direction === "declined" ? (
+                      <ArrowDown size={12} />
+                    ) : (
+                      <Minus size={12} />
+                    )}
+                    {placeHistory.trend.direction === "improved"
+                      ? "Yaxshilangan"
+                      : placeHistory.trend.direction === "declined"
+                      ? "Yomonlashgan"
+                      : "O'zgarmagan"}{" "}
+                    ({placeHistory.trend.latest}/100)
+                  </span>
+                )}
+              </div>
+              <button
+                onClick={() => setHistoryCamera(true)}
+                disabled={placeAddPhoto.isPending}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#0EA5A4]/15 text-[#0EA5A4] text-sm font-medium hover:bg-[#0EA5A4]/25 transition-colors disabled:opacity-50"
+              >
+                <Camera size={14} /> Holatni yangilash
+              </button>
+            </div>
+
+            {/* Xaritadan tekshirish */}
+            <div className="flex flex-col sm:flex-row gap-2 mb-4">
+              <input
+                type="text"
+                value={mapUrl}
+                onChange={(e) => setMapUrl(e.target.value)}
+                placeholder="Google yoki Yandex Maps havolasi..."
+                className="flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-[#8A8F98]/50 focus:outline-none focus:border-[#0EA5A4]/50"
+              />
+              <button
+                onClick={() => selectedBusiness && mapUrl.trim() && enrichMap.mutate({ businessId: selectedBusiness, url: mapUrl.trim() })}
+                disabled={enrichMap.isPending || !mapUrl.trim()}
+                className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm hover:bg-white/10 transition-colors disabled:opacity-50"
+              >
+                <MapPin size={14} /> {enrichMap.isPending ? "Tekshirilmoqda..." : "Xaritadan qo'shish"}
+              </button>
+            </div>
+
+            {/* Timeline */}
+            {placeHistory && placeHistory.entries.length > 0 ? (
+              <div className="space-y-2">
+                {placeHistory.entries.map((e: Record<string, any>) => (
+                  <div key={e.id} className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-white/5">
+                    {e.url ? (
+                      <img src={e.url} alt={e.label} className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                    ) : (
+                      <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
+                        <MapPin size={16} className="text-[#8A8F98]" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-white flex items-center gap-2">
+                        {e.label}
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 text-[#8A8F98] uppercase">{e.source}</span>
+                      </p>
+                      {e.note && <p className="text-[11px] text-[#8A8F98] line-clamp-2">{e.note}</p>}
+                      <p className="text-[10px] text-[#8A8F98]/70">{new Date(e.capturedAt).toLocaleString("uz-UZ")}</p>
+                    </div>
+                    {typeof e.conditionScore === "number" && (
+                      <div className="text-right shrink-0">
+                        <p className={`text-base font-bold font-mono-data ${
+                          e.conditionScore >= 70 ? "text-emerald-400" : e.conditionScore >= 40 ? "text-amber-400" : "text-red-400"
+                        }`}>{e.conditionScore}</p>
+                        <p className="text-[9px] text-[#8A8F98]">holat</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[#8A8F98]">Hozircha tarix yo'q. Rasm yoki xarita orqali qo'shing.</p>
+            )}
+          </div>
+
+          {/* ─── Narx radari ─── */}
+          <div className="glass-card">
+            <div className="flex items-center gap-3 mb-4">
+              <Receipt size={20} className="text-[#0EA5A4]" />
+              <h3 className="text-lg font-semibold">Narx radari</h3>
+            </div>
+
+            {/* Atrofdagi narxlar (faqat dam olish/mehmonxona) */}
+            {selectedBusinessData.type === "tourism" && (
+              <div className="mb-5">
+                <button
+                  onClick={() =>
+                    nearbyPrices.mutate({
+                      name: selectedBusinessData.name,
+                      region: selectedBusinessData.region,
+                      category: selectedBusinessData.category,
+                      type: selectedBusinessData.type,
+                    })
+                  }
+                  disabled={nearbyPrices.isPending}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#0EA5A4] text-white text-sm font-medium hover:bg-[#0D9488] transition-colors disabled:opacity-50"
+                >
+                  <TrendingUp size={14} /> {nearbyPrices.isPending ? "Hisoblanmoqda..." : "Atrofdagi narxlarni hisoblash"}
+                </button>
+                {nearby?.found !== undefined && (
+                  <div className="mt-3 p-4 rounded-xl bg-white/5 border border-white/10">
+                    <p className="text-lg font-semibold text-white">{String(nearby.avgText || "—")}</p>
+                    {nearby.verdict ? (
+                      <p className="text-xs text-[#0EA5A4] mt-1 capitalize">Baho: {String(nearby.verdict)}</p>
+                    ) : null}
+                    {nearby.note ? <p className="text-xs text-[#8A8F98] mt-1">{String(nearby.note)}</p> : null}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Chek / narx yorlig'i tekshirish */}
+            <div>
+              <p className="text-xs text-[#8A8F98] uppercase tracking-wider mb-2">Chek yoki narx yorlig'ini tekshirish</p>
+              <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm hover:bg-white/10 transition-colors cursor-pointer">
+                <Receipt size={14} />
+                {receiptCheck.isPending ? "Tahlil qilinmoqda..." : "Chek rasmini yuklash"}
+                <input type="file" accept="image/*" className="hidden" onChange={(ev) => handleReceiptFile(ev.target.files?.[0])} />
+              </label>
+              {receipt && (
+                <div className="mt-3 p-4 rounded-xl bg-white/5 border border-white/10">
+                  {Array.isArray(receipt.items) && receipt.items.length > 0 && (
+                    <div className="space-y-1 mb-2">
+                      {(receipt.items as { name: string; price: number }[]).map((it, i) => (
+                        <div key={i} className="flex justify-between text-sm">
+                          <span className="text-[#8A8F98]">{it.name}</span>
+                          <span className="text-white font-mono-data">{Number(it.price).toLocaleString("uz-UZ")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {typeof receipt.total === "number" && receipt.total > 0 && (
+                    <div className="flex justify-between text-sm font-semibold border-t border-white/10 pt-2">
+                      <span className="text-white">Jami</span>
+                      <span className="text-white font-mono-data">{Number(receipt.total).toLocaleString("uz-UZ")} so'm</span>
+                    </div>
+                  )}
+                  {receipt.verdict ? (
+                    <p className="text-xs mt-2 capitalize text-amber-400">Baho: {String(receipt.verdict)}</p>
+                  ) : null}
+                  {Array.isArray(receipt.hiddenFees) && receipt.hiddenFees.length > 0 && (
+                    <p className="text-xs text-red-400 mt-1">Yashirin to'lovlar: {(receipt.hiddenFees as string[]).join(", ")}</p>
+                  )}
+                  {receipt.note ? <p className="text-xs text-[#8A8F98] mt-1">{String(receipt.note)}</p> : null}
                 </div>
               )}
             </div>

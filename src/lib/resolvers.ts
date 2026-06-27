@@ -4,6 +4,14 @@
  * yo'liga mos keladi va eski API bilan bir xil shakldagi ma'lumot qaytaradi.
  */
 import { supabase } from "./supabase";
+import {
+  isGeminiConfigured,
+  geminiJson,
+  geminiJsonWithUrls,
+  geminiJsonSearch,
+  geminiText,
+  type GeminiMedia,
+} from "./gemini";
 
 // ─── Helperlar ───────────────────────────────────────────────────────────
 type Row = Record<string, any>;
@@ -51,6 +59,7 @@ export const resolvers: Record<string, (input: Input) => Promise<any>> = {
 
   "business.create": async (input) => {
     const i = input!;
+    const photos = (i.photos ?? []) as Row[];
     const inserted = await one(
       supabase.from("businesses").insert({
         name: i.name,
@@ -60,9 +69,25 @@ export const resolvers: Record<string, (input: Input) => Promise<any>> = {
         description: i.description || null,
         lat: i.lat || null,
         lng: i.lng || null,
+        photos: photos.map((p) => ({ label: p.label, url: p.url })),
       }).select().single(),
     );
-    return { id: Number(inserted?.id), ...i };
+    const businessId = Number(inserted?.id);
+    // Har bir tasdiqlangan rasmni "Haqiqat tarixi"ga yozamiz
+    if (businessId && photos.length > 0) {
+      await supabase.from("place_history").insert(
+        photos.map((p) => ({
+          businessId,
+          kind: "photo",
+          source: "user",
+          label: p.label,
+          url: p.url,
+          conditionScore: p.conditionScore ?? null,
+          note: p.conditionNote ?? null,
+        })),
+      );
+    }
+    return { id: businessId, ...i };
   },
 
   "business.claim": async (input) => {
@@ -225,7 +250,7 @@ export const resolvers: Record<string, (input: Input) => Promise<any>> = {
 
   "review.create": async (input) => {
     const i = input!;
-    const aiScore = simulateAIAnalysis(i.text || "");
+    const aiScore = await analyzeReviewAuthenticity(i.text || "");
     const inserted = await one(
       supabase.from("reviews").insert({
         businessId: i.businessId,
@@ -270,7 +295,7 @@ export const resolvers: Record<string, (input: Input) => Promise<any>> = {
     );
     if (!review) return null;
 
-    const draft = generateReplyDraft(review);
+    const draft = await generateAiReply(review);
     const inserted = await one(
       supabase.from("review_replies").insert({
         reviewId,
@@ -306,7 +331,11 @@ export const resolvers: Record<string, (input: Input) => Promise<any>> = {
 
   "adAnalysis.create": async (input) => {
     const i = input!;
-    const analysis = simulateAdAnalysis(i.sourceType);
+    const media: GeminiMedia | undefined =
+      i.mediaBase64 && i.mediaMimeType
+        ? { base64: i.mediaBase64, mimeType: i.mediaMimeType }
+        : undefined;
+    const analysis = await analyzeAd(i.sourceType, i.sourceLink, media);
     const inserted = await one(
       supabase.from("ad_analysis").insert({
         sourceType: i.sourceType,
@@ -322,6 +351,101 @@ export const resolvers: Record<string, (input: Input) => Promise<any>> = {
       }).select().single(),
     );
     return { id: Number(inserted?.id), ...analysis };
+  },
+
+  // AI sharhlar jamlamasi (afzalliklar / kamchiliklar / kimlar uchun)
+  "review.summary": async (input) => {
+    const all = await rows(
+      supabase.from("reviews").select("rating,text,aiFlag").eq("businessId", input!.businessId),
+    );
+    return summarizeReviews(all);
+  },
+
+  // Shaxsiy AI tavsiya (oila / talaba / juftlik uchun)
+  "business.recommend": async (input) => {
+    const audience = (input?.audience as string) || "umumiy";
+    const businesses = await rows(
+      supabase.from("businesses").select("*").order("trustScore", { ascending: false }).limit(20),
+    );
+    return recommendBusinesses(audience, businesses);
+  },
+
+  // Google/Yandex Maps havolasidan joy va sharhlar bo'yicha umumiy xulosa
+  "place.summary": async (input) => {
+    return analyzePlace((input?.url as string) || "");
+  },
+
+  // "Haqiqat tarixi" — joy holatining vaqt bo'yicha yozuvlari + trend
+  "place.history": async (input) => {
+    const businessId = input!.businessId;
+    const entries = await rows(
+      supabase.from("place_history").select("*")
+        .eq("businessId", businessId)
+        .order("capturedAt", { ascending: false }),
+    );
+    const scored = entries.filter((e) => typeof e.conditionScore === "number");
+    let trend: Row | null = null;
+    if (scored.length >= 1) {
+      const latest = scored[0];
+      const earliest = scored[scored.length - 1];
+      const delta = (latest.conditionScore ?? 0) - (earliest.conditionScore ?? 0);
+      trend = {
+        latest: latest.conditionScore,
+        earliest: earliest.conditionScore,
+        delta,
+        direction: delta > 5 ? "improved" : delta < -5 ? "declined" : "stable",
+        count: scored.length,
+      };
+    }
+    return { entries, trend };
+  },
+
+  // Mavjud biznesga yangi (dated) holat rasmi qo'shish
+  "place.addPhoto": async (input) => {
+    const i = input!;
+    const inserted = await one(
+      supabase.from("place_history").insert({
+        businessId: i.businessId,
+        kind: "photo",
+        source: "user",
+        label: i.label || "Umumiy",
+        url: i.url,
+        conditionScore: i.conditionScore ?? null,
+        note: i.note ?? null,
+      }).select().single(),
+    );
+    return inserted;
+  },
+
+  // Google/Yandex Maps havolasidan holat xulosasini tarixga qo'shish
+  "place.enrichFromMap": async (input) => {
+    const i = input!;
+    const result = await analyzeMapCondition(i.url as string);
+    const source = /yandex/i.test(String(i.url)) ? "yandex" : "google";
+    await supabase.from("place_history").insert({
+      businessId: i.businessId,
+      kind: "map",
+      source,
+      label: result.name || "Xarita",
+      url: null,
+      conditionScore: result.conditionScore,
+      note: result.note,
+    });
+    return result;
+  },
+
+  // Dam olish/mehmonxona uchun atrofdagi (hududiy) narxlar
+  "place.nearbyPrices": async (input) => {
+    const i = input!;
+    return analyzeNearbyPrices(i.name, i.region, i.category, i.type);
+  },
+
+  // Chek/narx skaner — OCR + atrofdagi narxga nisbatan baho
+  "price.checkReceipt": async (input) => {
+    const i = input!;
+    const media =
+      i.base64 && i.mimeType ? ({ base64: i.base64, mimeType: i.mimeType } as GeminiMedia) : undefined;
+    return checkReceipt(media, i.businessName, i.region, i.category);
   },
 
   "adAnalysis.stats": async () => {
@@ -562,6 +686,313 @@ async function recalculateTrustScore(businessId: number) {
     .from("businesses")
     .update({ trustScore: Math.min(100, Math.max(0, trustScore)) })
     .eq("id", businessId);
+}
+
+// ─── Gemini AI helperlari (kalit bo'lmasa evristik fallback) ────────────────
+async function analyzeReviewAuthenticity(
+  text: string,
+): Promise<{ score: number; flag: "genuine" | "suspicious" | "fake"; reason: string }> {
+  if (!isGeminiConfigured || !text.trim()) return simulateAIAnalysis(text);
+  try {
+    const res = await geminiJson<{ score: number; flag: string; reason: string }>(
+      `Sen O'zbek bozori sharhlari uchun soxta sharh va manipulyatsiya aniqlovchisan. Quyidagi sharhni tahlil qil va FAQAT JSON qaytar: {"score": 0-100 (haqiqiylik, yuqori=haqiqiy), "flag": "genuine"|"suspicious"|"fake", "reason": "qisqa o'zbekcha sabab"}. E'tibor ber: umumiy maqtov, haddan ortiq undov, botga o'xshash naqsh, his-tuyg'u nomuvofiqligi (sentiment), aniqlik yo'qligi.\n\nSharh: """${text}"""`,
+    );
+    const flag = (["genuine", "suspicious", "fake"].includes(res.flag) ? res.flag : "suspicious") as
+      | "genuine"
+      | "suspicious"
+      | "fake";
+    return {
+      score: Math.max(0, Math.min(100, Math.round(res.score))),
+      flag,
+      reason: res.reason || "AI tahlili",
+    };
+  } catch {
+    return simulateAIAnalysis(text);
+  }
+}
+
+async function generateAiReply(review: Row): Promise<string> {
+  if (!isGeminiConfigured) return generateReplyDraft(review);
+  try {
+    const reply = await geminiText(
+      `Sen biznes egasisan va mijoz sharhiga professional, hamdard javob yozyapsan. O'zbek tilida 2-3 jumla javob yoz. Faqat javob matnini qaytar.\n\nBaho: ${review.rating}/5\nSharh: """${review.text || ""}"""`,
+    );
+    return reply || generateReplyDraft(review);
+  } catch {
+    return generateReplyDraft(review);
+  }
+}
+
+type AdResult = {
+  claims: string[];
+  honestyScore: number;
+  mismatches: { claim: string; reality: string; evidence: string }[];
+  flags: string[];
+  summary: string;
+};
+
+// Telegram havolasini ochiq web-preview (t.me/s/...) ko'rinishiga keltiradi,
+// shunda Gemini URL-context uni o'qiy oladi.
+function normalizeTelegramUrl(link: string): string {
+  const m = link.match(/^https?:\/\/t\.me\/(.+)$/i);
+  if (!m) return link;
+  const rest = m[1];
+  if (rest.startsWith("s/")) return `https://t.me/${rest}`;
+  return `https://t.me/s/${rest}`;
+}
+
+const AD_JSON_SHAPE =
+  '{"claims": ["reklamadagi asosiy da\'volar"], "honestyScore": 0-100 (haqqoniylik), "mismatches": [{"claim":"da\'vo","reality":"haqiqat","evidence":"dalil"}], "flags": ["faqat shulardan: stock_footage, ai_generated, wrong_location, misleading_discount, false_claims, deepfake, repetitive_promo"], "summary": "o\'zbekcha qisqa xulosa"}';
+
+async function analyzeAd(
+  sourceType: string,
+  sourceLink: string | undefined,
+  media: GeminiMedia | undefined,
+): Promise<AdResult> {
+  if (!isGeminiConfigured || (!media && !sourceLink)) return simulateAdAnalysis(sourceType);
+
+  const normalize = (res: Partial<AdResult>): AdResult => ({
+    claims: res.claims ?? [],
+    mismatches: res.mismatches ?? [],
+    flags: res.flags ?? [],
+    honestyScore: Math.max(0, Math.min(100, Math.round(res.honestyScore ?? 50))),
+    summary: res.summary ?? "",
+  });
+
+  try {
+    // 1) Rasm/video bo'lsa — Computer Vision (inline media)
+    if (media) {
+      const prompt = `Sen reklama haqqoniyligini baholovchisan (Computer Vision: "Reklama vs Real borliq"). Berilgan rasm/videoni tahlil qil. FAQAT JSON qaytar:
+${AD_JSON_SHAPE}.
+Vizual haqiqiylikni bahola: stock/AI-generatsiya belgilari, joy mosligi, manipulyatsiya, tozalik/eskirish holati.${
+        sourceLink ? `\nQo'shimcha kontekst: ${sourceLink}` : ""
+      }`;
+      return normalize(await geminiJson<Partial<AdResult>>(prompt, media));
+    }
+
+    // 2) Havola bo'lsa (telegram post/kanal va h.k.) — URL-context bilan o'qib tahlil
+    const url = normalizeTelegramUrl(sourceLink!);
+    const prompt = `Sen reklama/post haqqoniyligini baholovchisan. Berilgan havola (Telegram post yoki kanal) mazmunini o'qib tahlil qil: da'volar, chegirma/aksiya shartlari, mubolag'a, manipulyatsiya va yolg'on belgilari. FAQAT JSON qaytar:
+${AD_JSON_SHAPE}.`;
+    return normalize(await geminiJsonWithUrls<Partial<AdResult>>(prompt, [url]));
+  } catch {
+    return simulateAdAnalysis(sourceType);
+  }
+}
+
+async function summarizeReviews(reviewList: Row[]) {
+  const count = reviewList.length;
+  if (count === 0) {
+    return { pros: [], cons: [], bestFor: [], priceQuality: "", summary: "Hozircha sharhlar yo'q.", count };
+  }
+  const avg = reviewList.reduce((s, r) => s + (r.rating || 0), 0) / count;
+  if (!isGeminiConfigured) {
+    return {
+      pros: avg >= 4 ? ["Mijozlar asosan mamnun"] : [],
+      cons: avg < 3 ? ["Bir nechta salbiy sharhlar mavjud"] : [],
+      bestFor: [],
+      priceQuality: avg >= 4 ? "Narx-sifat nisbati yaxshi" : "Narx-sifat o'rtacha",
+      summary: `${count} ta sharh, o'rtacha baho ${Math.round(avg * 10) / 10}/5. To'liq AI tahlili uchun Gemini kalitini qo'shing.`,
+      count,
+    };
+  }
+  try {
+    const text = reviewList.slice(0, 200).map((r) => `[${r.rating}/5] ${r.text || ""}`).join("\n");
+    const res = await geminiJson<{
+      pros: string[];
+      cons: string[];
+      bestFor: string[];
+      priceQuality: string;
+      summary: string;
+    }>(
+      `Quyidagi mijoz sharhlarini (o'zbekcha) jamla. FAQAT JSON qaytar:
+{"pros": ["3-5 ta afzallik"], "cons": ["3-5 ta kamchilik"], "bestFor": ["2-4 ta auditoriya: Oilalar, Talabalar, Juftliklar, Sayyohlar va h.k."], "priceQuality": "narx-sifat haqida 1 jumla o'zbekcha", "summary": "1-2 jumla umumiy xulosa o'zbekcha"}.
+
+Sharhlar:
+${text}`,
+    );
+    return {
+      pros: res.pros ?? [],
+      cons: res.cons ?? [],
+      bestFor: res.bestFor ?? [],
+      priceQuality: res.priceQuality ?? "",
+      summary: res.summary ?? "",
+      count,
+    };
+  } catch {
+    return {
+      pros: [],
+      cons: [],
+      bestFor: [],
+      priceQuality: "",
+      summary: `${count} ta sharh, o'rtacha ${Math.round(avg * 10) / 10}/5.`,
+      count,
+    };
+  }
+}
+
+type PlaceResult = {
+  found: boolean;
+  name: string;
+  rating: number;
+  reviewCount: number;
+  summary: string;
+  pros: string[];
+  cons: string[];
+  bestFor: string[];
+};
+
+async function analyzePlace(url: string): Promise<PlaceResult> {
+  const empty = (summary: string): PlaceResult => ({
+    found: false,
+    name: "",
+    rating: 0,
+    reviewCount: 0,
+    summary,
+    pros: [],
+    cons: [],
+    bestFor: [],
+  });
+  if (!url.trim()) return empty("Manzil havolasini kiriting.");
+  if (!isGeminiConfigured) return empty("Joy tahlili uchun Gemini AI kalitini (.env) qo'shing.");
+  try {
+    const prompt = `Sen joylarni baholovchisan. Berilgan Google yoki Yandex Maps havolasidagi joyni aniqla. Havolani o'qishga harakat qil; agar ocholmasang (masalan Google Maps bloklasa), havoladagi joy nomini aniqlab Google qidiruv orqali top. Joy haqida umumiy ma'lumot va foydalanuvchi sharhlaridan xulosa ber. FAQAT JSON qaytar:
+{"found": true yoki false, "name": "joy nomi", "rating": 0-5 o'rtacha baho, "reviewCount": taxminiy sharhlar soni, "summary": "o'zbekcha 2-3 jumla umumiy xulosa", "pros": ["3-5 afzallik"], "cons": ["2-4 kamchilik"], "bestFor": ["kimlar uchun mos: Oilalar, Juftliklar, Sayyohlar, Talabalar va h.k."]}.`;
+    const res = await geminiJsonWithUrls<Partial<PlaceResult>>(prompt, [url], { search: true });
+    return {
+      found: res.found ?? Boolean(res.name),
+      name: res.name ?? "",
+      rating: Math.max(0, Math.min(5, Number(res.rating) || 0)),
+      reviewCount: Math.max(0, Math.round(Number(res.reviewCount) || 0)),
+      summary: res.summary ?? "",
+      pros: res.pros ?? [],
+      cons: res.cons ?? [],
+      bestFor: res.bestFor ?? [],
+    };
+  } catch {
+    return empty("Havolani tahlil qilib bo'lmadi. Havola to'g'ri va ochiq ekanini tekshiring.");
+  }
+}
+
+// ─── Haqiqat tarixi: xaritadan holat xulosasi ──────────────────────────────
+type MapCondition = { found: boolean; name: string; conditionScore: number; note: string };
+
+async function analyzeMapCondition(url: string): Promise<MapCondition> {
+  if (!isGeminiConfigured || !url.trim()) {
+    return { found: false, name: "", conditionScore: 0, note: "Gemini kaliti yoki havola yo'q." };
+  }
+  try {
+    const prompt = `Berilgan Google yoki Yandex Maps havolasidagi joyni aniqla (ocholmasang Google qidiruv orqali top). Joydagi RASMLAR va SHARHLARga qarab uning HOZIRGI jismoniy holatini (tozalik, yangilik, saranjom-sarishtalik) bahola. FAQAT JSON: {"found": true/false, "name": "joy nomi", "conditionScore": 0-100 (joy holati), "note": "o'zbekcha 1-2 jumla — rasm va sharhlardan ko'ringan holat"}.`;
+    const res = await geminiJsonWithUrls<Partial<MapCondition>>(prompt, [url], { search: true });
+    return {
+      found: res.found ?? Boolean(res.name),
+      name: res.name ?? "",
+      conditionScore: Math.max(0, Math.min(100, Math.round(Number(res.conditionScore) || 0))),
+      note: res.note ?? "",
+    };
+  } catch {
+    return { found: false, name: "", conditionScore: 0, note: "Xaritani tahlil qilib bo'lmadi." };
+  }
+}
+
+// ─── Atrofdagi (hududiy) narxlar ────────────────────────────────────────────
+type NearbyPrices = {
+  found: boolean;
+  avgText: string;
+  min: number;
+  max: number;
+  currency: string;
+  verdict: string;
+  note: string;
+};
+
+async function analyzeNearbyPrices(
+  name: string,
+  region: string | undefined,
+  category: string | undefined,
+  type: string | undefined,
+): Promise<NearbyPrices> {
+  const empty = (note: string): NearbyPrices => ({
+    found: false, avgText: "", min: 0, max: 0, currency: "so'm", verdict: "", note,
+  });
+  if (!isGeminiConfigured) return empty("Atrofdagi narxlar uchun Gemini AI kalitini qo'shing.");
+  try {
+    const prompt = `Sen narx-bozor tahlilchisisan. "${name}" (${type || ""}, ${category || ""}) ${
+      region || "O'zbekiston"
+    } hududidagi joy. Shu ATROFDAGI o'xshash joylar (dam olish maskani / mehmonxona)ning odatiy narxlarini Google qidiruv orqali top va o'rtacha narx oralig'ini ber. FAQAT JSON: {"found": true/false, "avgText": "o'rtacha narx (masalan: 350 000 - 600 000 so'm/kecha)", "min": eng past son, "max": eng yuqori son, "currency": "so'm", "verdict": "arzon | o'rtacha | qimmat", "note": "o'zbekcha 1-2 jumla izoh va manba"}.`;
+    const res = await geminiJsonSearch<Partial<NearbyPrices>>(prompt);
+    return {
+      found: res.found ?? true,
+      avgText: res.avgText ?? "",
+      min: Math.max(0, Math.round(Number(res.min) || 0)),
+      max: Math.max(0, Math.round(Number(res.max) || 0)),
+      currency: res.currency ?? "so'm",
+      verdict: res.verdict ?? "",
+      note: res.note ?? "",
+    };
+  } catch {
+    return empty("Atrofdagi narxlarni hisoblab bo'lmadi.");
+  }
+}
+
+// ─── Chek / narx skaner (OCR + atrofga nisbatan baho) ───────────────────────
+type ReceiptCheck = {
+  items: { name: string; price: number }[];
+  total: number;
+  hiddenFees: string[];
+  verdict: string;
+  note: string;
+};
+
+async function checkReceipt(
+  media: GeminiMedia | undefined,
+  businessName: string | undefined,
+  region: string | undefined,
+  category: string | undefined,
+): Promise<ReceiptCheck> {
+  const empty = (note: string): ReceiptCheck => ({
+    items: [], total: 0, hiddenFees: [], verdict: "", note,
+  });
+  if (!isGeminiConfigured) return empty("Chek tahlili uchun Gemini AI kalitini qo'shing.");
+  if (!media) return empty("Chek yoki narx yorlig'i rasmini yuklang.");
+  try {
+    const prompt = `Sen chek/narx tahlilchisisan. Bu rasmda chek yoki narx yorlig'i bor. Matnni o'qi (o'zbek/rus), mahsulot-narxlarni ajrat. ${
+      businessName ? `Joy: ${businessName}. ` : ""
+    }${region ? `Hudud: ${region}. ` : ""}${
+      category ? `Toifa: ${category}. ` : ""
+    }Narxlarni shu hududdagi odatiy narxlar bilan taqqosla. FAQAT JSON: {"items": [{"name":"mahsulot","price": son}], "total": umumiy son, "hiddenFees": ["yashirin/qo'shimcha to'lovlar bo'lsa"], "verdict": "odil | biroz qimmat | haddan qimmat", "note": "o'zbekcha 1-2 jumla — narx atrofga nisbatan qanday, sayyoh uchun oshirilganmi"}.`;
+    const res = await geminiJson<Partial<ReceiptCheck>>(prompt, media);
+    return {
+      items: res.items ?? [],
+      total: Math.max(0, Math.round(Number(res.total) || 0)),
+      hiddenFees: res.hiddenFees ?? [],
+      verdict: res.verdict ?? "",
+      note: res.note ?? "",
+    };
+  } catch (err) {
+    return empty(err instanceof Error ? err.message : "Chekni tahlil qilib bo'lmadi.");
+  }
+}
+
+async function recommendBusinesses(audience: string, businesses: Row[]) {
+  const fallback = {
+    recommendations: businesses.slice(0, 3).map((b) => ({
+      name: b.name,
+      reason: `Yuqori ishonch reytingi (${b.trustScore || 0})`,
+    })),
+  };
+  if (!isGeminiConfigured || businesses.length === 0) return fallback;
+  try {
+    const list = businesses
+      .map((b) => `- ${b.name} (${b.type}, ${b.category || ""}, ${b.region || ""}, ishonch: ${b.trustScore || 0})`)
+      .join("\n");
+    const res = await geminiJson<{ recommendations: { name: string; reason: string }[] }>(
+      `Quyidagi bizneslar ro'yxatidan "${audience}" auditoriyasi uchun eng mos 3 tasini tanla. FAQAT JSON qaytar: {"recommendations": [{"name":"biznes nomi","reason":"o'zbekcha qisqa sabab"}]}.\n\nBizneslar:\n${list}`,
+    );
+    return { recommendations: res.recommendations ?? fallback.recommendations };
+  } catch {
+    return fallback;
+  }
 }
 
 // ─── AI simulyatsiya (sharh haqiqiyligini baholash) ─────────────────────────

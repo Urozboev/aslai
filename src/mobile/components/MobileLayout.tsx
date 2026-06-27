@@ -2,7 +2,6 @@ import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router";
 import {
   Home,
-  Search,
   MessageSquare,
   ScanLine,
   Building2,
@@ -14,7 +13,6 @@ import DotGridCanvas from "@/components/effects/DotGridCanvas";
 
 const tabs = [
   { path: "/mobile", label: "Asosiy", icon: Home },
-  { path: "/mobile/market", label: "Bozor", icon: Search },
   { path: "/mobile/reviews", label: "Sharhlar", icon: MessageSquare },
   { path: "/mobile/ads", label: "Reklama", icon: ScanLine },
   { path: "/mobile/business", label: "Biznes", icon: Building2 },

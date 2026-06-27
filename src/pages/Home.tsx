@@ -29,23 +29,23 @@ export default function Home() {
             </div>
 
             <KineticText
-              text="Ishonch Raqamlarda"
+              text="Ishonch raqamlarda"
               as="h1"
               className="text-4xl md:text-5xl lg:text-6xl font-bold leading-tight text-glow-teal"
             />
 
             <p className="text-lg text-[#8A8F98] leading-relaxed max-w-lg">
               Real-vaqt analitika, shaffof narxlash va tekshirilgan sharhlar
-              O'zbekiston bozorlari uchun.
+              HAMMA uchun.
             </p>
 
             <div className="flex flex-wrap gap-3">
               <a
-                href="/market"
+                href="/reviews"
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-[#0EA5A4] text-white font-medium text-sm hover:bg-[#0D9488] transition-colors shadow-lg shadow-[#0EA5A4]/20"
               >
                 <TrendingUp size={16} />
-                Bozorni ko'rish
+                Sharhlarni ko'rish
               </a>
               <a
                 href="/ads"
